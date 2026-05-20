@@ -16,7 +16,7 @@ import zipfile
 import sys
 
 # ============================================================
-# 1. ЗАГРУЗКА ДАННЫХ MOVIELENS 32M (автоматическая)
+# 1. ЗАГРУЗКА ДАННЫХ MOVIELENS 32M
 # ============================================================
 
 def download_movielens():
@@ -25,26 +25,44 @@ def download_movielens():
     zip_path = "ml-32m.zip"
     extract_path = "ml-32m"
     
-    if os.path.exists(extract_path):
-        print(f"Данные уже есть в {extract_path}")
+    # Проверяем, не распакован ли уже
+    if os.path.exists(extract_path) and os.path.exists(os.path.join(extract_path, "ratings.csv")):
+        print(f"Датасет уже распакован в {extract_path}")
         return extract_path
     
-    print(f"Скачивание {url}... (около 950 МБ, может занять несколько минут)")
-    urllib.request.urlretrieve(url, zip_path)
+    # Проверяем, не скачан ли zip
+    if os.path.exists(zip_path):
+        print(f"Файл {zip_path} уже скачан, распаковываю...")
+    else:
+        print(f"Скачивание {url}... (около 950 МБ, может занять 10-20 минут)")
+        print("Если скачивание прервётся, запустите код ещё раз - продолжится с того же места")
+        try:
+            urllib.request.urlretrieve(url, zip_path)
+            print("Скачивание завершено!")
+        except Exception as e:
+            print(f"Ошибка скачивания: {e}")
+            print("Попробуйте скачать датасет вручную с сайта https://grouplens.org/datasets/movielens/32m/")
+            print("и распаковать архив в папку ml-32m")
+            sys.exit(1)
     
     print("Распаковка...")
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(".")
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(".")
+        print("Распаковка завершена!")
+    except Exception as e:
+        print(f"Ошибка распаковки: {e}")
+        sys.exit(1)
     
-    os.remove(zip_path)
-    print("Готово!")
-    return extract_path
+    return "ml-32m"
 
 def load_ratings(data_path):
     """Загружает рейтинги из CSV"""
-    ratings_file = os.path.join(data_path, "ml-32m", "ratings.csv")
+    ratings_file = os.path.join(data_path, "ratings.csv")
+    
     if not os.path.exists(ratings_file):
-        ratings_file = os.path.join(data_path, "ratings.csv")
+        print(f"Файл {ratings_file} не найден!")
+        sys.exit(1)
     
     print(f"Загрузка {ratings_file}...")
     df = pd.read_csv(ratings_file)
@@ -59,7 +77,7 @@ def load_ratings(data_path):
 
 def build_sparse_matrices(df):
     """Строит матрицу рейтингов в форматах COO, CSR, CSC"""
-    users = df['userId'].values - 1  # 0-based индексация
+    users = df['userId'].values - 1
     items = df['movieId'].values - 1
     ratings = df['rating'].values
     
@@ -70,23 +88,23 @@ def build_sparse_matrices(df):
     print(f"Ненулевых элементов: {len(df)}")
     print(f"Плотность: {len(df) / (num_users * num_items) * 100:.4f}%")
     
-    # Построение в COO (самый простой для создания)
     print("\nПостроение COO...")
     start = time.perf_counter()
     mat_coo = coo_matrix((ratings, (users, items)), shape=(num_users, num_items))
     time_coo_build = time.perf_counter() - start
+    print(f"  Готово за {time_coo_build:.2f} сек")
     
-    # Конвертация в CSR
     print("Конвертация COO → CSR...")
     start = time.perf_counter()
     mat_csr = mat_coo.tocsr()
     time_csr_convert = time.perf_counter() - start
+    print(f"  Готово за {time_csr_convert:.2f} сек")
     
-    # Конвертация в CSC
     print("Конвертация COO → CSC...")
     start = time.perf_counter()
     mat_csc = mat_coo.tocsc()
     time_csc_convert = time.perf_counter() - start
+    print(f"  Готово за {time_csc_convert:.2f} сек")
     
     return mat_coo, mat_csr, mat_csc, (time_coo_build, time_csr_convert, time_csc_convert)
 
@@ -119,42 +137,13 @@ def benchmark_spmv(mat, name, n_trials=10):
         start = time.perf_counter()
         result = mat @ vec
         times.append(time.perf_counter() - start)
-    avg_time = np.mean(times) * 1000  # в миллисекундах
+    avg_time = np.mean(times) * 1000
     std_time = np.std(times) * 1000
     print(f"  {name}: {avg_time:.2f} ± {std_time:.2f} мс")
     return avg_time
 
 # ============================================================
-# 5. ПРАКТИЧЕСКАЯ ЗАДАЧА: ПОИСК ПОХОЖИХ ПОЛЬЗОВАТЕЛЕЙ
-# ============================================================
-
-def find_similar_users(mat_csr, user_id, k=10):
-    """
-    Находит k пользователей, наиболее похожих на заданного
-    на основе косинусного сходства их рейтингов
-    """
-    from sklearn.metrics.pairwise import cosine_similarity
-    
-    user_idx = user_id - 1
-    user_vector = mat_csr[user_idx, :]
-    
-    # Вычисляем сходство со всеми пользователями
-    start = time.perf_counter()
-    similarities = cosine_similarity(user_vector, mat_csr).flatten()
-    elapsed = time.perf_counter() - start
-    
-    # Исключаем самого пользователя и берём топ-k
-    similarities[user_idx] = -1
-    top_k_indices = np.argsort(similarities)[-k:][::-1]
-    top_k_scores = similarities[top_k_indices]
-    
-    # Переводим индексы обратно в userId (1-based)
-    top_k_users = [idx + 1 for idx in top_k_indices]
-    
-    return top_k_users, top_k_scores, elapsed
-
-# ============================================================
-# 6. ОСНОВНОЙ ЭКСПЕРИМЕНТ
+# 5. ОСНОВНОЙ ЭКСПЕРИМЕНТ
 # ============================================================
 
 def main():
@@ -174,11 +163,14 @@ def main():
     print("\n" + "=" * 40)
     print("РЕЗУЛЬТАТЫ ЭКСПЕРИМЕНТА 1: ПАМЯТЬ")
     print("=" * 40)
-    print(f"COO: {get_memory_mb(mat_coo):.2f} МБ")
-    print(f"CSR: {get_memory_mb(mat_csr):.2f} МБ")
-    print(f"CSC: {get_memory_mb(mat_csc):.2f} МБ")
+    mem_coo = get_memory_mb(mat_coo)
+    mem_csr = get_memory_mb(mat_csr)
+    mem_csc = get_memory_mb(mat_csc)
+    print(f"COO: {mem_coo:.2f} МБ")
+    print(f"CSR: {mem_csr:.2f} МБ")
+    print(f"CSC: {mem_csc:.2f} МБ")
     
-    # 4. Время загрузки/построения
+    # 4. Время построения
     print("\n" + "=" * 40)
     print("РЕЗУЛЬТАТЫ ЭКСПЕРИМЕНТА 2: ВРЕМЯ ПОСТРОЕНИЯ")
     print("=" * 40)
@@ -188,42 +180,35 @@ def main():
     
     # 5. Производительность SpMV
     print("\n" + "=" * 40)
-    print("РЕЗУЛЬТАТЫ ЭКСПЕРИМЕНТА 3: УМНОЖЕНИЕ МАТРИЦЫ НА ВЕКТОР (SpMV)")
+    print("РЕЗУЛЬТАТЫ ЭКСПЕРИМЕНТА 3: УМНОЖЕНИЕ НА ВЕКТОР (SpMV)")
     print("=" * 40)
     t_coo = benchmark_spmv(mat_coo, "COO")
     t_csr = benchmark_spmv(mat_csr, "CSR")
     t_csc = benchmark_spmv(mat_csc, "CSC")
     
-    # 6. Практическая задача: поиск похожих пользователей
+    # 6. Итоговый вывод
     print("\n" + "=" * 40)
-    print("ПРАКТИЧЕСКАЯ ЗАДАЧА: ПОИСК ПОХОЖИХ ПОЛЬЗОВАТЕЛЕЙ")
+    print("ВЫВОДЫ")
     print("=" * 40)
-    test_user_id = 1
-    top_users, scores, time_taken = find_similar_users(mat_csr, test_user_id, k=5)
-    print(f"Для пользователя {test_user_id} наиболее похожие пользователи:")
-    for i, (uid, score) in enumerate(zip(top_users, scores), 1):
-        print(f"  {i}. user_id={uid}, косинусное сходство={score:.4f}")
-    print(f"Время выполнения запроса: {time_taken*1000:.2f} мс")
     
-    # 7. Итоговый вывод
+    # Сравнение с плотной матрицей
+    dense_memory_gb = mat_csr.shape[0] * mat_csr.shape[1] * 8 / (1024**3)
+    csr_memory_gb = mem_csr / 1024
+    print(f"Плотная матрица заняла бы: {dense_memory_gb:.1f} ГБ")
+    print(f"CSR занимает: {csr_memory_gb:.2f} ГБ")
+    print(f"Экономия памяти: {dense_memory_gb / csr_memory_gb:.0f}x")
+    
+    print(f"\nCSR быстрее COO в {t_coo / t_csr:.1f} раз")
+    print(f"CSR быстрее CSC в {t_csc / t_csr:.1f} раз")
+    print(f"CSR экономит память: {mem_coo / mem_csr:.1f}x по сравнению с COO")
+    
     print("\n" + "=" * 40)
-    print("ОБЩИЕ ВЫВОДЫ")
+    print("ИТОГОВАЯ РЕКОМЕНДАЦИЯ")
     print("=" * 40)
-    print(f"1. Экономия памяти CSR vs плотный аналог:")
-    dense_memory = mat_csr.shape[0] * mat_csr.shape[1] * 8 / (1024**3)
-    csr_memory = get_memory_mb(mat_csr) / 1024
-    print(f"   Плотная матрица заняла бы ≈ {dense_memory:.1f} ГБ")
-    print(f"   CSR занимает {csr_memory:.2f} ГБ")
-    print(f"   Экономия в {dense_memory / csr_memory:.0f} раз")
+    print("Для задач машинного обучения и статистики")
+    print("рекомендуется использовать формат CSR.")
     
-    print(f"\n2. Ускорение SpMV:")
-    print(f"   CSR быстрее COO в {t_coo / t_csr:.1f} раз")
-    print(f"   CSR быстрее CSC в {t_csc / t_csr:.1f} раз")
-    
-    print("\n3. Рекомендация:")
-    print("   - Для построения матриц из сырых данных удобен COO")
-    print("   - Для вычислений (SpMV, ML-алгоритмы) предпочтителен CSR")
-    print("   - CSC эффективен при работе по столбцам")
+    input("\nНажмите Enter, чтобы закрыть окно...")
 
 if __name__ == "__main__":
     main()
