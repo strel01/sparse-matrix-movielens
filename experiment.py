@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Экспериментальное сравнение форматов разреженных матриц на датасете MovieLens 32M
-Автор: Стрелков Владимир
-Курсовая работа: Разреженные матрицы в статистике и машинном обучении
-"""
-
 import numpy as np
 import pandas as pd
 from scipy.sparse import coo_matrix, csr_matrix, csc_matrix
